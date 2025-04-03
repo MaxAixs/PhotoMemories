@@ -1,0 +1,55 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    container_name: memoryPictures-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: memory-pictures
+    ports:
+      - "5445:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - memory-pictures-network
+  redis:
+    image: redis:7
+    container_name: memoryPictures-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - memory-pictures-network
+  bot:
+    image: memorypicbot:latest
+    env_file:
+      - .env
+    container_name: telegram_bot
+    restart: always
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+    networks:
+      - memory-pictures-network
+  migrate:
+    image: migrate/migrate
+    container_name: tgBot_migrate
+    command: -path /app/migrations -database "postgres://postgres:${DB_PASSWORD}@postgres:5432/memory-pictures?sslmode=disable" up
+    volumes:
+      - ./migrations:/app/migrations
+    depends_on:
+      - postgres
+    networks:
+      - memory-pictures-network
+volumes:
+  postgres_data: {}
+networks:
+  memory-pictures-network:
+    driver: bridge
