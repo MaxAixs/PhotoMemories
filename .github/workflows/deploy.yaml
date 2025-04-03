@@ -1,0 +1,201 @@
+name: Deploy Telegram Bot Go to AWS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Get dependencies
+        run: go mod download
+
+  build:
+    name: Build Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Create .env file
+        run: |
+          echo "TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN}}" >> .env
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+          echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" >> .env
+          echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" >> .env
+
+      - name: Build Docker image locally
+        run: docker build -t memorypicbot:latest .
+
+      - name: Save Docker image as tar
+        run: |
+          docker save memorypicbot:latest -o memorypicbot.tar
+          ls -lah memorypicbot.tar
+
+      - name: Upload Docker image as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: memorypicbot-image
+          path: memorypicbot.tar
+
+      - name: Upload docker-compose.yml as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose
+          path: docker-compose.yml
+
+      - name: Upload migrations directory if exists
+        run: |
+          if [ -d "migrations" ]; then
+            tar -czf migrations.tar.gz migrations
+            echo "Migrations directory found and archived"
+          else
+            echo "No migrations directory found"
+            touch migrations-not-found
+          fi
+
+      - name: Upload migrations as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrations
+          path: |
+            migrations.tar.gz
+            migrations-not-found
+
+  deploy:
+    name: Deploy to EC2
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: memorypicbot-image
+
+      - name: Download docker-compose artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-compose
+
+      - name: Download migrations artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: migrations
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Save SSH key to file
+        run: |
+          echo "${{ secrets.AWS_SSH_KEY }}" > ~/my-new-key.pem
+          chmod 600 ~/my-new-key.pem
+
+      - name: Add EC2 to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.EC2_PUBLIC_IP }} >> ~/.ssh/known_hosts
+
+      - name: Start Docker daemon on EC2 if not running
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            if ! sudo systemctl is-active --quiet docker; then
+              echo 'Docker is not running. Starting Docker...'
+              sudo systemctl start docker
+              sudo systemctl enable docker
+            else
+              echo 'Docker is already running.'
+            fi
+          "
+
+      - name: Check Docker and Docker Compose versions
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            echo 'Docker version:' && sudo docker --version || echo 'Docker not installed'
+            echo 'Docker Compose version:' && sudo docker-compose --version || echo 'Docker Compose not installed'
+          "
+
+      - name: Install Docker Compose if needed
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            if ! command -v docker-compose &> /dev/null; then
+              echo 'Installing Docker Compose...'
+              sudo curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
+          "
+
+      - name: Create .env file on EC2
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            echo 'TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}' > /home/ubuntu/.env
+            echo 'DB_PASSWORD=${{ secrets.DB_PASSWORD }}' >> /home/ubuntu/.env
+            echo 'AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}' >> /home/ubuntu/.env
+            echo 'AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}' >> /home/ubuntu/.env
+          "
+
+      - name: Copy Docker image to EC2 instance
+        run: |
+          scp -i ~/my-new-key.pem memorypicbot.tar ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/home/ubuntu
+
+      - name: Copy docker-compose.yml to EC2 instance
+        run: |
+          scp -i ~/my-new-key.pem docker-compose.yml ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/home/ubuntu
+
+      - name: Copy and extract migrations if they exist
+        run: |
+          if [ -f "migrations.tar.gz" ]; then
+            scp -i ~/my-new-key.pem migrations.tar.gz ubuntu@${{ secrets.EC2_PUBLIC_IP }}:/home/ubuntu/
+            ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+              cd /home/ubuntu && 
+              tar -xzf migrations.tar.gz &&
+              echo 'Migrations extracted successfully'
+            "
+          else
+            echo "No migrations to copy"
+          fi
+
+      - name: Update docker-compose.yml on EC2
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            sed -i 's/build:/image: memorypicbot:latest/g' /home/ubuntu/docker-compose.yml &&
+            sed -i '/context:/d' /home/ubuntu/docker-compose.yml &&
+            sed -i '/dockerfile:/d' /home/ubuntu/docker-compose.yml
+          "
+
+      - name: Clean up old containers and images on EC2
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            echo 'Stopping and removing old containers...'
+            sudo docker-compose down -v &&
+            echo 'Removing old images and pruning system...'
+            sudo docker image rm memorypicbot:latest || true &&
+            sudo docker system prune -af
+          "
+
+      - name: Deploy Docker image on EC2 using Docker Compose
+        run: |
+          ssh -i ~/my-new-key.pem ubuntu@${{ secrets.EC2_PUBLIC_IP }} "
+            echo 'Loading new Docker image...'
+            sudo docker load -i /home/ubuntu/memorypicbot.tar &&
+            cd /home/ubuntu &&
+            echo 'Starting containers using Docker Compose...'
+            sudo docker-compose up -d
+          "
