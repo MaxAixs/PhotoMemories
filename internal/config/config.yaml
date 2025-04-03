@@ -1,0 +1,41 @@
+commands:
+  start: "start"
+  help: "help"
+
+buttons:
+  addPic: "Add Pic"
+  deletePic: "Delete Pic"
+  getPic: "Get Pic"
+  myTags: "My Tags"
+
+messages:
+  response:
+    start: "Welcome to the Telegram handlers 'Memories'! 😊 Here you will receive reminders of your best moments to inspire and make you smile every day. Enjoy the journey through a world of bright emotions and unforgettable moments! 🎉"
+    help: "Welcome to the handlers instructions! 📖\n\n• Add your favorite photos to preserve warm memories of your best life moments. 📸\n• If needed, you can delete unnecessary photos. 🗑️\n\nJust use the handlers commands to manage your photos. Enjoy using and storing your memories! 🌟"
+    default: "I don't understand this message. 😕 Type /start to get started or /help for instruction"
+    addPhoto: "Please send the photo you would like to add. 📷"
+    deletePhoto: "Please send the tag by which you want to delete the photo. ❌"
+    getPic: "Please send the tag by which you want to get the photo. 🔍"
+    getMyTags: "Just a moment, here are all the tags you've saved for your photos 📸"
+  errors:
+    err_upload_pic: "There was an error uploading your photo. Please try again. ⚠️"
+    err_upload_tag: "Failed to add tag to your photo. Please try again. ⚠️"
+    err_del_pic: "An error occurred while deleting the picture. Please try again. ⚠️"
+    err_get_tags: "failed to get tags.Try again please! ⚠️"
+  success:
+    pic_saved: " Your picture has been saved successfully!✅ Please choose a tag for it. 🏷️"
+    pic_deleted: "Your picture has been deleted successfully!🗑️"
+    tag_saved: " Successfully saved tag to your pictures!✅ "
+
+awsConfig:
+  bucket: "tgphoto-storage"
+  region: "eu-central-1"
+
+redisConfig: "redis:6379"
+
+dbConfig:
+    host: "memoryPictures-db"
+    port: "5432"
+    username: "postgres"
+    db_name: "memory-pictures"
+    ssl_mode: "disable"
